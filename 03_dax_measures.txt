@@ -1,0 +1,193 @@
+====================================================================
+UPI TRANSACTIONS DASHBOARD — DAX MEASURES LIBRARY
+Built for the real UPI_Transactions.xlsx star schema
+(fact_transactions + dim_date + dim_bank)
+====================================================================
+Data model: fact_transactions (many) --> dim_date (one), and TWO
+relationships to dim_bank (role-playing dimension):
+  - fact_transactions[sent_bank_id]     -> dim_bank[bank_id]  (ACTIVE)
+  - fact_transactions[received_bank_id] -> dim_bank[bank_id]  (INACTIVE)
+Mark dim_date as the official Date Table (Model view > dim_date >
+Mark as date table > full_date).
+====================================================================
+
+---------------------------------------------------------------
+1. CORE KPIs
+---------------------------------------------------------------
+
+Total Transaction Value =
+CALCULATE(SUM(fact_transactions[amount]), fact_transactions[status]="Success")
+
+Total Transactions =
+CALCULATE(COUNTROWS(fact_transactions), fact_transactions[status]="Success")
+
+Average Ticket Size =
+DIVIDE([Total Transaction Value], [Total Transactions])
+
+Success Rate % =
+DIVIDE(
+    CALCULATE(COUNTROWS(fact_transactions), fact_transactions[status]="Success"),
+    COUNTROWS(fact_transactions)
+)
+
+Failure Rate % =
+DIVIDE(
+    CALCULATE(COUNTROWS(fact_transactions), fact_transactions[status]="Failed"),
+    COUNTROWS(fact_transactions)
+)
+
+Total Failed Value (at-risk amount) =
+CALCULATE(SUM(fact_transactions[amount]), fact_transactions[status]="Failed")
+
+---------------------------------------------------------------
+2. TIME INTELLIGENCE (requires dim_date marked as Date Table)
+---------------------------------------------------------------
+-- NOTE: this dataset covers only calendar year 2024, so YoY
+-- measures (SAMEPERIODLASTYEAR) will return blank on this data.
+-- They're included below because they're correct, reusable DAX
+-- patterns -- they'll activate automatically if you later load
+-- a second year of data. For now, lean on MTD / MoM / QTD.
+
+MTD Value =
+TOTALMTD([Total Transaction Value], dim_date[full_date])
+
+Previous Month Value =
+CALCULATE([Total Transaction Value], PREVIOUSMONTH(dim_date[full_date]))
+
+MoM Growth % =
+VAR CurrMonth = [Total Transaction Value]
+VAR PrevMonth = [Previous Month Value]
+RETURN DIVIDE(CurrMonth - PrevMonth, PrevMonth)
+
+QTD Value =
+TOTALQTD([Total Transaction Value], dim_date[full_date])
+
+YoY Growth % (dormant until 2nd year of data is loaded) =
+VAR CurrYear = [Total Transaction Value]
+VAR PrevYear = CALCULATE([Total Transaction Value], SAMEPERIODLASTYEAR(dim_date[full_date]))
+RETURN DIVIDE(CurrYear - PrevYear, PrevYear)
+
+7-Day Moving Average =
+VAR CurrentDate = MAX(dim_date[full_date])
+RETURN
+CALCULATE(
+    AVERAGEX(VALUES(dim_date[full_date]), [Total Transaction Value]),
+    DATESINPERIOD(dim_date[full_date], CurrentDate, -7, DAY)
+)
+
+---------------------------------------------------------------
+3. ROLE-PLAYING DIMENSION MEASURES (dim_bank used twice)
+---------------------------------------------------------------
+-- By default only the ACTIVE relationship (sent_bank_id) applies.
+-- Use USERELATIONSHIP to pull numbers through the INACTIVE
+-- (received_bank_id) relationship instead. This is the single
+-- most "senior" DAX technique in this project -- good to be able
+-- to explain in an interview.
+
+Value Sent By Bank =
+CALCULATE([Total Transaction Value])
+-- uses the active relationship: fact[sent_bank_id] -> dim_bank[bank_id]
+-- put dim_bank[bank_name] on rows/axis to break this out per bank
+
+Value Received By Bank =
+CALCULATE(
+    [Total Transaction Value],
+    USERELATIONSHIP(fact_transactions[received_bank_id], dim_bank[bank_id])
+)
+-- same visual, but forces DAX through the inactive relationship
+-- so you can show "money in" per bank alongside "money out"
+
+Bank Net Flow =
+[Value Received By Bank] - [Value Sent By Bank]
+
+---------------------------------------------------------------
+4. SPENDING PATTERN MEASURES
+---------------------------------------------------------------
+
+Weekend Spend =
+CALCULATE([Total Transaction Value], dim_date[is_weekend] = TRUE)
+
+Weekday Spend =
+CALCULATE([Total Transaction Value], dim_date[is_weekend] = FALSE)
+
+Top Purpose Value =
+CALCULATE(
+    [Total Transaction Value],
+    TOPN(1, ALL(fact_transactions[purpose]), [Total Transaction Value])
+)
+
+Transfer Share % =
+DIVIDE(
+    CALCULATE([Total Transaction Value], fact_transactions[transaction_type]="Transfer"),
+    [Total Transaction Value]
+)
+
+---------------------------------------------------------------
+5. ANOMALY / DATA-QUALITY MEASURES
+---------------------------------------------------------------
+-- IMPORTANT: Amount in this dataset is uniformly distributed
+-- (no natural fat-tail outliers), so a Z-score approach finds
+-- nothing here -- confirmed by testing the SQL Z-score query in
+-- 02_analysis_queries.sql against this data (zero rows returned).
+-- The dataset's real, built-in anomaly signal is the
+-- amount_exceeds_balance flag, so the DAX below is built around
+-- that instead of a statistical Z-score.
+
+Amount Exceeds Balance Count =
+CALCULATE(
+    COUNTROWS(fact_transactions),
+    fact_transactions[amount_exceeds_balance] = 1
+)
+
+Amount Exceeds Balance % =
+DIVIDE([Amount Exceeds Balance Count], COUNTROWS(fact_transactions))
+
+Non-INR Transaction Value =
+CALCULATE(
+    SUM(fact_transactions[amount]),
+    fact_transactions[currency] <> "INR"
+)
+
+Non-INR Share % =
+DIVIDE([Non-INR Transaction Value], SUM(fact_transactions[amount]))
+-- Data-quality flag measure: a genuine UPI feed should be 100%
+-- INR. Surfacing this on the dashboard functions as a live data-
+-- quality indicator, not just a spending metric.
+
+---------------------------------------------------------------
+6. RANKING MEASURES
+---------------------------------------------------------------
+
+Merchant Rank by Value =
+RANKX(ALL(fact_transactions[merchant_name]), [Total Transaction Value], , DESC)
+
+City Rank by Value =
+RANKX(ALL(fact_transactions[city]), [Total Transaction Value], , DESC)
+
+====================================================================
+DASHBOARD PAGE / VISUAL MAPPING
+====================================================================
+Page 1 - Executive Overview
+  Cards: Total Transaction Value, Total Transactions, Success Rate %,
+         Average Ticket Size, Total Failed Value
+  Line chart: Total Transaction Value by Month (2024) with 7-Day Moving Average
+  Donut: Total Transaction Value by Transaction Type (Transfer/Payment)
+  Bar: Total Transaction Value by City
+
+Page 2 - Spending Patterns
+  Bar chart: Total Transaction Value by Purpose
+  Table: Merchant performance (txn_count, total value, avg ticket) ranked
+  Clustered column: Weekday vs Weekend average ticket size
+  Matrix: Age Group x Gender, values = avg ticket size
+
+Page 3 - Anomaly & Data Quality
+  Card: Amount Exceeds Balance Count / %, Non-INR Share %, Failure Rate %
+  Table: transactions where amount_exceeds_balance = 1, sorted by (amount - remaining_balance)
+  Bar chart: Failure Rate % by sending bank
+  Bar chart: Transaction value by currency (highlighting non-INR as a data-quality callout)
+
+Page 4 - Bank Flow & Time Trends
+  Bar chart: Value Sent By Bank vs Value Received By Bank (role-playing dimension demo)
+  Line chart: MoM Growth % across 2024
+  Area chart: Quarterly value by Transaction Type
+  KPI visual: MTD Value vs Previous Month
