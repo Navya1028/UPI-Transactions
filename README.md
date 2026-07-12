@@ -11,16 +11,16 @@ ruling out a statistical approach that didn't fit the data).
 > screenshots" below.
 
 ### Executive Overview
-![Overview](screenshots/page1_overview.png)
+![Overview](page1.png)
 
 ### Spending Patterns
-![Spending](screenshots/page2_spending.png)
+![Spending](page2.png)
 
 ### Anomaly & Data Quality
-![Anomaly](screenshots/page3_anomaly.png)
+![Anomaly](page3.png)
 
 ### Bank Flow & Trends
-![Bank Flow](screenshots/page4_bankflow.png)
+![Bank Flow](page4.png)
 
 ## What this project does
 
